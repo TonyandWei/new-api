@@ -145,6 +145,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		return true
 	})
 
+	if ghostErr, exists := c.Get("ghost_error"); exists {
+		return nil, types.NewOpenAIError(fmt.Errorf("upstream ghost error: %v", ghostErr), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+	}
+
 	// 对音频模型，从倒数第二个stream data中提取usage信息
 	if isAudioModel && secondLastStreamData != "" {
 		var streamResp struct {
