@@ -42,6 +42,23 @@ type testResult struct {
 	newAPIError *types.NewAPIError
 }
 
+func isResponsesOnlyModelForChannelTest(channel *model.Channel, modelName string) bool {
+	lowerModel := strings.ToLower(strings.TrimSpace(modelName))
+	if lowerModel == "" {
+		return false
+	}
+	if strings.HasSuffix(modelName, ratio_setting.CompactModelSuffix) {
+		return true
+	}
+	if channel != nil && channel.Type == constant.ChannelTypeCodex {
+		return true
+	}
+	if strings.Contains(lowerModel, "codex") {
+		return true
+	}
+	return strings.HasPrefix(lowerModel, "gpt-5")
+}
+
 func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointType string) string {
 	normalized := strings.TrimSpace(endpointType)
 	if normalized != "" {
@@ -50,7 +67,7 @@ func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointTyp
 	if strings.HasSuffix(modelName, ratio_setting.CompactModelSuffix) {
 		return string(constant.EndpointTypeOpenAIResponseCompact)
 	}
-	if channel != nil && channel.Type == constant.ChannelTypeCodex {
+	if isResponsesOnlyModelForChannelTest(channel, modelName) {
 		return string(constant.EndpointTypeOpenAIResponse)
 	}
 	return normalized
@@ -122,7 +139,7 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 		}
 
 		// responses-only models
-		if strings.Contains(strings.ToLower(testModel), "codex") {
+		if isResponsesOnlyModelForChannelTest(channel, testModel) {
 			requestPath = "/v1/responses"
 		}
 
@@ -692,8 +709,7 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 		}
 	}
 
-	// Responses-only models (e.g. codex series)
-	if strings.Contains(strings.ToLower(model), "codex") {
+	if isResponsesOnlyModelForChannelTest(channel, model) {
 		return &dto.OpenAIResponsesRequest{
 			Model:  model,
 			Input:  json.RawMessage(`[{"role":"user","content":"hi"}]`),
