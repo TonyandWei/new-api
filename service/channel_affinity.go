@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/cachex"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -529,6 +530,40 @@ func ApplyChannelAffinityOverrideTemplate(c *gin.Context, paramOverride map[stri
 	return mergedParam, true
 }
 
+func shouldHonorAffinityPriority(preferredPriority int64, highestPriority int64) bool {
+	return preferredPriority >= highestPriority
+}
+
+func shouldHonorPreferredChannelByAffinity(usingGroup string, modelName string, channelID int) bool {
+	if !common.MemoryCacheEnabled {
+		return true
+	}
+	if channelID <= 0 || strings.TrimSpace(modelName) == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(usingGroup), "auto") {
+		return true
+	}
+
+	preferredChannel, err := model.CacheGetChannel(channelID)
+	if err != nil || preferredChannel == nil {
+		return false
+	}
+	if preferredChannel.Status != common.ChannelStatusEnabled {
+		return false
+	}
+	if !model.IsChannelEnabledForGroupModel(usingGroup, modelName, channelID) {
+		return false
+	}
+
+	highestPriorityChannel, err := model.GetRandomSatisfiedChannel(usingGroup, modelName, 0)
+	if err != nil || highestPriorityChannel == nil {
+		return true
+	}
+
+	return shouldHonorAffinityPriority(preferredChannel.GetPriority(), highestPriorityChannel.GetPriority())
+}
+
 func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup string) (int, bool) {
 	setting := operation_setting.GetChannelAffinitySetting()
 	if setting == nil || !setting.Enabled {
@@ -598,6 +633,12 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 			return 0, false
 		}
 		if found {
+			if !shouldHonorPreferredChannelByAffinity(usingGroup, modelName, channelID) {
+				if _, delErr := cache.DeleteMany([]string{cacheKeySuffix}); delErr != nil {
+					common.SysError(fmt.Sprintf("channel affinity cache delete failed: key=%s, err=%v", cacheKeyFull, delErr))
+				}
+				return 0, false
+			}
 			return channelID, true
 		}
 		return 0, false

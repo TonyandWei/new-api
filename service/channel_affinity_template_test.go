@@ -185,3 +185,15 @@ func TestChannelAffinityHitCodexTemplatePassHeadersEffective(t *testing.T) {
 	_, exists = info.RuntimeHeadersOverride["x-codex-turn-metadata"]
 	require.False(t, exists)
 }
+
+func TestShouldHonorAffinityPriorityWhenEqualPriority(t *testing.T) {
+	require.True(t, shouldHonorAffinityPriority(120, 120))
+}
+
+func TestShouldHonorAffinityPriorityWhenPreferredIsHigher(t *testing.T) {
+	require.True(t, shouldHonorAffinityPriority(120, 110))
+}
+
+func TestShouldHonorAffinityPriorityWhenPreferredIsLower(t *testing.T) {
+	require.False(t, shouldHonorAffinityPriority(110, 120))
+}
