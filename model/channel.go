@@ -1,6 +1,7 @@
 package model
 
 import (
+	"bytes"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
@@ -74,8 +75,30 @@ func (c ChannelInfo) Value() (driver.Value, error) {
 
 // Scan implements sql.Scanner interface
 func (c *ChannelInfo) Scan(value interface{}) error {
-	bytesValue, _ := value.([]byte)
-	return common.Unmarshal(bytesValue, c)
+	var raw []byte
+	switch v := value.(type) {
+	case nil:
+		*c = ChannelInfo{}
+		return nil
+	case []byte:
+		raw = append([]byte(nil), v...)
+	case string:
+		raw = []byte(v)
+	default:
+		encoded, err := common.Marshal(v)
+		if err != nil {
+			return err
+		}
+		raw = encoded
+	}
+
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*c = ChannelInfo{}
+		return nil
+	}
+
+	return common.Unmarshal(trimmed, c)
 }
 
 func (channel *Channel) GetKeys() []string {
