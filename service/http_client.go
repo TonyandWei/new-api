@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -40,6 +42,12 @@ func InitHttpClient() {
 		ForceAttemptHTTP2:   true,
 		Proxy:               http.ProxyFromEnvironment, // Support HTTP_PROXY, HTTPS_PROXY, NO_PROXY env vars
 	}
+	if headerTimeoutStr := os.Getenv("RELAY_RESPONSE_HEADER_TIMEOUT_SECONDS"); headerTimeoutStr != "" {
+		if headerTimeout, err := strconv.Atoi(headerTimeoutStr); err == nil && headerTimeout > 0 {
+			transport.ResponseHeaderTimeout = time.Duration(headerTimeout) * time.Second
+		}
+	}
+
 	if common.TLSInsecureSkipVerify {
 		transport.TLSClientConfig = common.InsecureTLSConfig
 	}
@@ -111,6 +119,11 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 			ForceAttemptHTTP2:   true,
 			Proxy:               http.ProxyURL(parsedURL),
 		}
+		if headerTimeoutStr := os.Getenv("RELAY_RESPONSE_HEADER_TIMEOUT_SECONDS"); headerTimeoutStr != "" {
+			if headerTimeout, err := strconv.Atoi(headerTimeoutStr); err == nil && headerTimeout > 0 {
+				transport.ResponseHeaderTimeout = time.Duration(headerTimeout) * time.Second
+			}
+		}
 		if common.TLSInsecureSkipVerify {
 			transport.TLSClientConfig = common.InsecureTLSConfig
 		}
@@ -151,6 +164,11 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return dialer.Dial(network, addr)
 			},
+		}
+		if headerTimeoutStr := os.Getenv("RELAY_RESPONSE_HEADER_TIMEOUT_SECONDS"); headerTimeoutStr != "" {
+			if headerTimeout, err := strconv.Atoi(headerTimeoutStr); err == nil && headerTimeout > 0 {
+				transport.ResponseHeaderTimeout = time.Duration(headerTimeout) * time.Second
+			}
 		}
 		if common.TLSInsecureSkipVerify {
 			transport.TLSClientConfig = common.InsecureTLSConfig
