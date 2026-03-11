@@ -225,6 +225,53 @@ func TestGeminiChatHandlerUsesEstimatedPromptTokensWhenUsagePromptMissing(t *tes
 	require.Equal(t, 110, usage.TotalTokens)
 }
 
+func TestCovertOpenAI2GeminiAttachesThoughtSignatureToEveryToolCallPart(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	request := dto.GeneralOpenAIRequest{
+		Messages: []dto.Message{{Role: "assistant"}},
+	}
+	request.Messages[0].SetToolCalls([]dto.ToolCallRequest{
+		{
+			ID:   "call_1",
+			Type: "function",
+			Function: dto.FunctionRequest{
+				Name:      "default_api:exec",
+				Arguments: `{"command":"pwd"}`,
+			},
+		},
+		{
+			ID:   "call_2",
+			Type: "function",
+			Function: dto.FunctionRequest{
+				Name:      "default_api:process",
+				Arguments: `{"input":"hi"}`,
+			},
+		},
+	})
+
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeGemini,
+			UpstreamModelName: "gemini-3.1-pro-preview",
+		},
+	}
+
+	geminiRequest, err := CovertOpenAI2Gemini(c, request, info)
+	require.NoError(t, err)
+	require.Len(t, geminiRequest.Contents, 1)
+	require.Len(t, geminiRequest.Contents[0].Parts, 2)
+
+	for _, part := range geminiRequest.Contents[0].Parts {
+		require.NotNil(t, part.FunctionCall)
+		require.Equal(t, `"skip_thought_signature_validator"`, string(part.ThoughtSignature))
+	}
+}
+
 func TestGeminiStreamHandlerUsesEstimatedPromptTokensWhenUsagePromptMissing(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
