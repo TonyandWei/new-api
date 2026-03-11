@@ -106,6 +106,45 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	scanner.Buffer(make([]byte, InitialScannerBufferSize), getScannerBufferSize())
 	scanner.Split(bufio.ScanLines)
+
+	var bufferedLines []string
+	var isGhostError bool
+	var ghostErrorMsg string
+
+	// Peek the first chunk to detect ghost errors wrapped in HTTP 200
+	for i := 0; i < 20; i++ {
+		if !scanner.Scan() {
+			break
+		}
+		line := scanner.Text()
+		bufferedLines = append(bufferedLines, line)
+
+		lowerLine := strings.ToLower(line)
+		if strings.Contains(lowerLine, "error occurred while processing your request") || strings.Contains(lowerLine, "fake_200_json_error") || strings.Contains(lowerLine, "help.openai.com") {
+			isGhostError = true
+			ghostErrorMsg = line
+			break
+		}
+
+		if len(line) >= 5 && (line[:5] == "data:" || line[:6] == "[DONE]") {
+			if line[:5] == "data:" {
+				dataContent := strings.ToLower(line[5:])
+				if strings.Contains(dataContent, "error occurred while processing your request") || strings.Contains(dataContent, "fake_200_json_error") || strings.Contains(dataContent, "help.openai.com") {
+					isGhostError = true
+					ghostErrorMsg = line
+				}
+			}
+			break
+		}
+	}
+
+	if isGhostError {
+		// Log the intercepted ghost error
+		logger.LogWarn(c, fmt.Sprintf("Intercepted upstream Ghost Error inside stream: %s", ghostErrorMsg))
+		c.Set("ghost_error", ghostErrorMsg)
+		return // Do NOT send headers!
+	}
+
 	SetEventStreamHeaders(c)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -212,34 +251,32 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			}
 		}()
 
-		for scanner.Scan() {
-			// 检查是否需要停止
+		processLine := func(data string) bool {
 			select {
 			case <-stopChan:
-				return
+				return false
 			case <-ctx.Done():
-				return
+				return false
 			case <-c.Request.Context().Done():
-				return
+				return false
 			default:
 			}
 
 			ticker.Reset(streamingTimeout)
-			data := scanner.Text()
 			if common.DebugEnabled {
 				println(data)
 			}
 
 			if len(data) < 6 {
-				continue
+				return true
 			}
 			if data[:5] != "data:" && data[:6] != "[DONE]" {
-				continue
+				return true
 			}
 			data = data[5:]
 			data = strings.TrimSpace(data)
 			if data == "" {
-				continue
+				return true
 			}
 			if !strings.HasPrefix(data, "[DONE]") {
 				info.SetFirstResponseTime()
@@ -248,15 +285,27 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				select {
 				case dataChan <- data:
 				case <-ctx.Done():
-					return
+					return false
 				case <-stopChan:
-					return
+					return false
 				}
 			} else {
-				// done, 处理完成标志，直接退出停止读取剩余数据防止出错
 				if common.DebugEnabled {
 					println("received [DONE], stopping scanner")
 				}
+				return false
+			}
+			return true
+		}
+
+		for _, line := range bufferedLines {
+			if !processLine(line) {
+				return
+			}
+		}
+
+		for scanner.Scan() {
+			if !processLine(scanner.Text()) {
 				return
 			}
 		}
