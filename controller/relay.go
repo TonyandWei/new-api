@@ -186,9 +186,24 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	isSameChannelRetry := false
+	var lastChannel *model.Channel
+	var channel *model.Channel
+	var channelErr *types.NewAPIError
+
+	for {
 		relayInfo.RetryIndex = retryParam.GetRetry()
-		channel, channelErr := getChannel(c, relayInfo, retryParam)
+
+		if isSameChannelRetry && lastChannel != nil {
+			channel = lastChannel
+			channelErr = middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName)
+		} else {
+			channel, channelErr = getChannel(c, relayInfo, retryParam)
+			if channelErr == nil {
+				lastChannel = channel
+			}
+		}
+
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
 			newAPIError = channelErr
@@ -230,6 +245,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+			break
+		}
+
+		if !isSameChannelRetry {
+			isSameChannelRetry = true
+		} else {
+			retryParam.IncreaseRetry()
+			isSameChannelRetry = false
+		}
+
+		if retryParam.GetRetry() > common.RetryTimes {
 			break
 		}
 	}

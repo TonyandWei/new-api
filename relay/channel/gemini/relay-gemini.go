@@ -48,7 +48,7 @@ var geminiSupportedMimeTypes = map[string]bool{
 	"video/flv":       true,
 }
 
-const thoughtSignatureBypassValue = "context_engineering_is_the_way_to_go"
+const thoughtSignatureBypassValue = "skip_thought_signature_validator"
 
 // Gemini 允许的思考预算范围
 const (
@@ -510,7 +510,7 @@ func CovertOpenAI2Gemini(c *gin.Context, textRequest dto.GeneralOpenAIRequest, i
 						Arguments:    args,
 					},
 				}
-				if shouldAttachThoughtSignature && !signatureAttached && hasFunctionCallContent(toolCall.FunctionCall) && len(toolCall.ThoughtSignature) == 0 {
+				if shouldAttachThoughtSignature && hasFunctionCallContent(toolCall.FunctionCall) && len(toolCall.ThoughtSignature) == 0 {
 					toolCall.ThoughtSignature = json.RawMessage(strconv.Quote(thoughtSignatureBypassValue))
 					signatureAttached = true
 				}

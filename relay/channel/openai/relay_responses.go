@@ -78,57 +78,98 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 	var usage = &dto.Usage{}
 	var responseTextBuilder strings.Builder
+	var streamErr *types.NewAPIError
+	sentDownstreamEvent := false
 
 	helper.StreamScannerHandler(c, resp, info, func(data string) bool {
 
 		// 检查当前数据是否包含 completed 状态和 usage 信息
 		var streamResponse dto.ResponsesStreamResponse
-		if err := common.UnmarshalJsonStr(data, &streamResponse); err == nil {
-			sendResponsesStreamData(c, streamResponse, data)
-			switch streamResponse.Type {
-			case "response.completed":
+		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
+			logger.LogError(c, "failed to unmarshal stream response: "+err.Error())
+			if !sentDownstreamEvent {
+				streamErr = types.NewOpenAIError(fmt.Errorf("failed to unmarshal responses stream: %w", err), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+				return false
+			}
+			return true
+		}
+
+		switch streamResponse.Type {
+		case "response.error", "response.failed":
+			if !sentDownstreamEvent {
 				if streamResponse.Response != nil {
-					if streamResponse.Response.Usage != nil {
-						if streamResponse.Response.Usage.InputTokens != 0 {
-							usage.PromptTokens = streamResponse.Response.Usage.InputTokens
-						}
-						if streamResponse.Response.Usage.OutputTokens != 0 {
-							usage.CompletionTokens = streamResponse.Response.Usage.OutputTokens
-						}
-						if streamResponse.Response.Usage.TotalTokens != 0 {
-							usage.TotalTokens = streamResponse.Response.Usage.TotalTokens
-						}
-						if streamResponse.Response.Usage.InputTokensDetails != nil {
-							usage.PromptTokensDetails.CachedTokens = streamResponse.Response.Usage.InputTokensDetails.CachedTokens
-						}
+					if oaiErr := streamResponse.Response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
+						streamErr = types.WithOpenAIError(*oaiErr, http.StatusInternalServerError)
+					} else {
+						streamErr = types.NewOpenAIError(fmt.Errorf("responses stream error: %s", streamResponse.Type), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 					}
-					if streamResponse.Response.HasImageGenerationCall() {
-						c.Set("image_generation_call", true)
-						c.Set("image_generation_call_quality", streamResponse.Response.GetQuality())
-						c.Set("image_generation_call_size", streamResponse.Response.GetSize())
+				} else {
+					streamErr = types.NewOpenAIError(fmt.Errorf("responses stream error: %s", streamResponse.Type), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+				}
+				return false
+			}
+			sendResponsesStreamData(c, streamResponse, data)
+			sentDownstreamEvent = true
+			return false
+		case "response.completed":
+			if streamResponse.Response != nil {
+				if streamResponse.Response.Usage != nil {
+					if streamResponse.Response.Usage.InputTokens != 0 {
+						usage.PromptTokens = streamResponse.Response.Usage.InputTokens
+					}
+					if streamResponse.Response.Usage.OutputTokens != 0 {
+						usage.CompletionTokens = streamResponse.Response.Usage.OutputTokens
+					}
+					if streamResponse.Response.Usage.TotalTokens != 0 {
+						usage.TotalTokens = streamResponse.Response.Usage.TotalTokens
+					}
+					if streamResponse.Response.Usage.InputTokensDetails != nil {
+						usage.PromptTokensDetails.CachedTokens = streamResponse.Response.Usage.InputTokensDetails.CachedTokens
 					}
 				}
-			case "response.output_text.delta":
-				// 处理输出文本
-				responseTextBuilder.WriteString(streamResponse.Delta)
-			case dto.ResponsesOutputTypeItemDone:
-				// 函数调用处理
-				if streamResponse.Item != nil {
-					switch streamResponse.Item.Type {
-					case dto.BuildInCallWebSearchCall:
-						if info != nil && info.ResponsesUsageInfo != nil && info.ResponsesUsageInfo.BuiltInTools != nil {
-							if webSearchTool, exists := info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolWebSearchPreview]; exists && webSearchTool != nil {
-								webSearchTool.CallCount++
-							}
+				if streamResponse.Response.HasImageGenerationCall() {
+					c.Set("image_generation_call", true)
+					c.Set("image_generation_call_quality", streamResponse.Response.GetQuality())
+					c.Set("image_generation_call_size", streamResponse.Response.GetSize())
+				}
+			}
+			sendResponsesStreamData(c, streamResponse, data)
+			sentDownstreamEvent = true
+		case "response.output_text.delta":
+			responseTextBuilder.WriteString(streamResponse.Delta)
+			sendResponsesStreamData(c, streamResponse, data)
+			sentDownstreamEvent = true
+		case dto.ResponsesOutputTypeItemDone:
+			if streamResponse.Item != nil {
+				switch streamResponse.Item.Type {
+				case dto.BuildInCallWebSearchCall:
+					if info != nil && info.ResponsesUsageInfo != nil && info.ResponsesUsageInfo.BuiltInTools != nil {
+						if webSearchTool, exists := info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolWebSearchPreview]; exists && webSearchTool != nil {
+							webSearchTool.CallCount++
 						}
 					}
 				}
 			}
-		} else {
-			logger.LogError(c, "failed to unmarshal stream response: "+err.Error())
+			sendResponsesStreamData(c, streamResponse, data)
+			sentDownstreamEvent = true
+		default:
+			sendResponsesStreamData(c, streamResponse, data)
+			sentDownstreamEvent = true
 		}
 		return true
 	})
+
+	if ghostErr, exists := c.Get("ghost_error"); exists {
+		return nil, types.NewOpenAIError(fmt.Errorf("upstream ghost error: %v", ghostErr), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+	}
+
+	if streamErr != nil {
+		return nil, streamErr
+	}
+
+	if !sentDownstreamEvent && usage.TotalTokens == 0 && responseTextBuilder.Len() == 0 {
+		return nil, types.NewOpenAIError(fmt.Errorf("responses stream ended before any downstream event or completion usage"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+	}
 
 	if usage.CompletionTokens == 0 {
 		// 计算输出文本的 token 数量
